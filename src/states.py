@@ -141,6 +141,7 @@ class ControllerInputs:
 
 class CarState:
     def __init__(self):
+        self.car_id: int = -1
         self.team_num: int = 0  # Blue = 0, orange = 1
 
         self.phys: PhysState = PhysState()
@@ -154,6 +155,8 @@ class CarState:
         self.is_demoed: bool = False
 
     def read_from_json(self, j):
+        if not (j.get("car_id") is None):
+            self.car_id = j["car_id"]
         self.team_num = j["team_num"]
 
         self.phys.read_from_json(j["phys"])
@@ -211,6 +214,8 @@ class GameState:
         for t in default_boost_pad_locations:
             self.boost_pad_locations.append(Vector3(t))
         self.boost_pad_states = None
+        self._seen_boost_pads_list = False
+        self.boost_pad_meta = None
 
         self.recv_time = -1
         self.recv_interval = -1
@@ -238,24 +243,65 @@ class GameState:
             for i in range(len(self.car_states)):
                 self.car_states[i].read_from_json(j_cars[i])
 
-        if not (j.get("boost_pad_locations") is None):
-            self.boost_pad_locations = []
-            for pos in j.get("boost_pad_locations"):
-                self.boost_pad_locations.append(Vector3(pos))
+            if not (j.get("gamemode") is None):
+                self.gamemode = j["gamemode"].lower()
+            else:
+                self.gamemode = "soccar"
 
-        if not (j.get("boost_pad_states") is None):
-            self.boost_pad_states = j.get("boost_pad_states")
+            if not (j.get("boost_pads") is None):
+                pads = []
+                for pad in j.get("boost_pads"):
+                    if pad is None:
+                        continue
+                    pos = pad.get("pos")
+                    if pos is None:
+                        continue
+                    pads.append(pad)
 
-            if len(self.boost_pad_states) != len(self.boost_pad_locations):
-                raise ("Number of boost pad states ({}) does not match number of boost pad locations ({})"
-                       .format(len(self.boost_pad_states), len(self.boost_pad_locations)))
-        else:
-            self.boost_pad_states = None
+                pads.sort(key=lambda p: (p.get("index") is None, p.get("index")))
 
-        if not (j.get("gamemode") is None):
-            self.gamemode = j["gamemode"].lower()
-        else:
-            self.gamemode = "soccar"
+                new_locations = []
+                new_states = []
+                new_meta = []
+                for pad in pads:
+                    pos = pad.get("pos")
+                    new_locations.append(Vector3(pos))
+                    new_states.append(bool(pad.get("is_active", True)))
+                    new_meta.append({
+                        "index": pad.get("index"),
+                        "prev_locked_car_id": pad.get("prev_locked_car_id"),
+                    })
+                self.boost_pad_locations = new_locations
+                self.boost_pad_states = new_states if len(new_states) == len(new_locations) else None
+                self.boost_pad_meta = new_meta if len(new_meta) == len(new_locations) else None
+                self._seen_boost_pads_list = True
+            else:
+                if self._seen_boost_pads_list:
+                    return
+                if not (j.get("boost_pad_locations") is None):
+                    new_locations = []
+                    for pos in j.get("boost_pad_locations"):
+                        new_locations.append(Vector3(pos))
+                    self.boost_pad_locations = new_locations
+
+                if j.get("boost_pad_locations") is None:
+                    if self.gamemode == "soccar":
+                        if len(self.boost_pad_locations) != len(default_boost_pad_locations):
+                            self.boost_pad_locations = []
+                            for t in default_boost_pad_locations:
+                                self.boost_pad_locations.append(Vector3(t))
+                    else:
+                        self.boost_pad_locations = []
+
+                if not (j.get("boost_pad_states") is None):
+                    self.boost_pad_states = j.get("boost_pad_states")
+
+                    if len(self.boost_pad_states) != len(self.boost_pad_locations):
+                        self.boost_pad_states = None
+                else:
+                    self.boost_pad_states = None
+                self.boost_pad_meta = None
+
 
         self.render_state = RenderState()
         if not (j.get("render") is None):
