@@ -9,7 +9,6 @@ uniform vec3 ballPos;
 in FD {
 	vec3 vert;
 	vec3 norm;
-	vec2 text;
 	float edgeFrac;
 } inData;
 
@@ -96,13 +95,11 @@ uniform mat4 m_model;
 in VD {
 	vec3 vert;
 	vec3 norm;
-	vec2 text;
 } inData[];
 
 out FD {
 	vec3 vert;
 	vec3 norm;
-	vec2 text;
 	float edgeFrac;
 } outData;
 
@@ -152,36 +149,17 @@ void main() {
     
     if (doWireframe) {
         vec3 norm = (inData[0].norm + inData[1].norm + inData[2].norm) / 3;
-        vec2 text = (inData[0].text + inData[1].text + inData[2].text) / 3;
-        outData.norm = norm;
-        outData.text = text;
-        
-        outData.edgeFrac = 0;
-        {
-            for (int i = 0; i < 3; i++) {
-                
-                outData.vert = ip[i];
-                
-                gl_Position = m_vp * m_model * vec4(outData.vert, 1);
-                
-                EmitVertex();
-            }
-            EndPrimitive();
+        if (abs(norm.x) > 0.95 || abs(norm.y) > 0.95 || abs(norm.z) > 0.95) {
+            doWireframe = false;
         }
-    
-        outData.edgeFrac = 1;
-        {
-            vec3 ovs[4*3];
-            for (int i = 0; i < 3; i++) {
-                ovs[i*4 + 0] = p[(0 + i) % 3];
-                ovs[i*4 + 1] = ip[(0 + i) % 3];
-                ovs[i*4 + 2] = p[(2 + i) % 3];
-                ovs[i*4 + 3] = ip[(2 + i) % 3];
-            }
-            
-            for (int i = 0; i < 3; i++) {
-                for (int j = 0; j < 4; j++) {
-                    outData.vert = ovs[i * 4 + j];
+        outData.norm = norm;
+        
+        if (doWireframe) {
+            outData.edgeFrac = 0;
+            {
+                for (int i = 0; i < 3; i++) {
+                    
+                    outData.vert = ip[i];
                     
                     gl_Position = m_vp * m_model * vec4(outData.vert, 1);
                     
@@ -189,13 +167,46 @@ void main() {
                 }
                 EndPrimitive();
             }
+    
+            outData.edgeFrac = 1;
+            {
+                vec3 ovs[4*3];
+                for (int i = 0; i < 3; i++) {
+                    ovs[i*4 + 0] = p[(0 + i) % 3];
+                    ovs[i*4 + 1] = ip[(0 + i) % 3];
+                    ovs[i*4 + 2] = p[(2 + i) % 3];
+                    ovs[i*4 + 3] = ip[(2 + i) % 3];
+                }
+                
+                for (int i = 0; i < 3; i++) {
+                    for (int j = 0; j < 4; j++) {
+                        outData.vert = ovs[i * 4 + j];
+                        
+                        gl_Position = m_vp * m_model * vec4(outData.vert, 1);
+                        
+                        EmitVertex();
+                    }
+                    EndPrimitive();
+                }
+            }
+        } else {
+            for (int i = 0; i < 3; i++) {
+                
+                outData.vert = inData[i].vert;
+                outData.norm = inData[i].norm;
+                outData.edgeFrac = 0;
+                
+                gl_Position = m_vp * m_model * vec4(p[i], 1);
+                
+                EmitVertex();
+            }
+            EndPrimitive();
         }
     } else {
         for (int i = 0; i < 3; i++) {
             
             outData.vert = inData[i].vert;
             outData.norm = inData[i].norm;
-            outData.text = inData[i].text;
             outData.edgeFrac = 0;
             
             gl_Position = m_vp * m_model * vec4(p[i], 1);
@@ -226,7 +237,6 @@ void main() {
             
             outData.vert = vert;
             outData.norm = inData[i].norm;
-            outData.text = inData[i].text;
             outData.edgeFrac = float(itr == 1);
     
             gl_Position = m_vp * m_model * vec4(vert, 1);
@@ -257,13 +267,10 @@ uniform mat4 m_model;
 
 in vec3 in_position;
 in vec4 in_normal;
-in vec2 in_texcoord_0;
-in vec3 in_color;
 
 out VD {
 	vec3 vert;
 	vec3 norm;
-	vec2 text;
 } outData;
 
 noperspective out vec2 windowPosition;
@@ -278,7 +285,6 @@ void main() {
 				modelRot[i][j] = (i == j) ? 1 : 0;
 
     outData.norm = (modelRot * in_normal).xyz;
-    outData.text = in_texcoord_0;
     gl_Position = m_vp * m_model * vec4(in_position, 1.0);
     windowPosition = in_position.xy;
 }

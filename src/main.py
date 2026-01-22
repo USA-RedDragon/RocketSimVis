@@ -17,6 +17,7 @@ from outline_renderer import OutlineRenderer
 import ui
 from ui import get_ui, QUIBarWidget, QRSVWindow
 from config import Config, ConfigVal
+from collision_mesh_loader import find_collision_mesh_root, load_collision_meshes_for_mode
 
 import moderngl
 import moderngl_window
@@ -56,6 +57,11 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
         self.fps_counter = 0
         self.last_fps = 0
         self.prev_state = None # type: GameState
+
+        self.arena_mesh_cache = {}
+        self.arena_mesh_vertex_counts = {}
+        self.arena_mesh_vbos = {}
+        self.collision_mesh_root = None
 
         ########################################################################
 
@@ -177,6 +183,47 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
         if not (self.outline_renderer is None):
             self.outline_renderer.load_vao(model_name, model)
 
+    def load_collision_arena_mesh(self, gamemode: str):
+        if self.collision_mesh_root is None:
+            self.collision_mesh_root = find_collision_mesh_root()
+
+        if self.collision_mesh_root is None:
+            return None
+
+        try:
+            packed, vert_count = load_collision_meshes_for_mode(self.collision_mesh_root, gamemode)
+        except Exception as exc:
+            print(f"Failed to load collision meshes for {gamemode}: {exc}")
+            return None
+
+        model_name = f"ArenaCollision_{gamemode}"
+        if model_name in self.vaos:
+            return model_name
+
+        vbo = self.ctx.buffer(packed.tobytes())
+        vao = self.ctx.vertex_array(
+            self.prog_arena,
+            [(vbo, "3f 4f", "in_position", "in_normal")]
+        )
+
+        self.vaos[model_name] = vao
+        self.arena_mesh_vertex_counts[model_name] = vert_count
+        self.arena_mesh_vbos[model_name] = vbo
+
+        return model_name
+
+    def get_arena_mesh_for_state(self, state: GameState):
+        gamemode = (state.gamemode or "soccar").lower()
+
+        if gamemode not in self.arena_mesh_cache:
+            model_name = self.load_collision_arena_mesh(gamemode)
+            if model_name is None:
+                model_name = "ArenaMeshCustom.obj"
+            self.arena_mesh_cache[gamemode] = model_name
+
+        model_name = self.arena_mesh_cache[gamemode]
+        return model_name, self.arena_mesh_vertex_counts.get(model_name)
+
     def render_model(self,
                      pos, forward, up,
                      model_name, texture, scale = 1.0, global_color = None,
@@ -259,14 +306,14 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
 
         self.ribbon_vbo.write(np.array(vertices).astype('f4'), 0)
 
-        glDisable(GL_CULL_FACE)
+        # glDisable(GL_CULL_FACE)
         self.render_model(
             None, None, None,
             "ribbon", self.t_none, scale=20,
             global_color=color,
             mode=moderngl.TRIANGLE_STRIP
         )
-        glEnable(GL_CULL_FACE)
+        # glEnable(GL_CULL_FACE)
 
     def calc_camera_state(self, state, interp_ratio, delta_time):
         pos = Vector3((-4000, 0, 1000))
@@ -531,11 +578,15 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
 
         ###########################################
 
+        arena_model_name, arena_vert_count = self.get_arena_mesh_for_state(state)
         self.pra_ball_pos.write(state.ball_state.get_pos(interp_ratio).astype('f4'))
+        # self.ctx.disable(moderngl.CULL_FACE)
         self.render_model(
             None, None, None,
-            model_name='ArenaMeshCustom.obj', texture=self.t_none, scale=1, global_color=Vector4((1,1,1,1))
+            model_name=arena_model_name, texture=self.t_none, scale=1, global_color=Vector4((1,1,1,1)),
+            vert_amount=arena_vert_count
         )
+        # self.ctx.enable(moderngl.CULL_FACE)
 
         if not (self.outline_renderer is None):
             self.outline_renderer.render_quad()
