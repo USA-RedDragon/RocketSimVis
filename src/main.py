@@ -127,6 +127,7 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
 
         self.load_vao("Octane.obj")
         self.load_vao("Ball.obj")
+        self.load_vao("Puck.obj")
 
         self.load_vao("BoostPad_Small_0.obj")
         self.load_vao("BoostPad_Small_1.obj")
@@ -138,6 +139,7 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
             self.load_texture_2d(DATA_DIR_PATH + "T_Octane_O.png")
         ]
         self.t_ball = self.load_texture_2d(DATA_DIR_PATH + "T_Ball.png")
+        self.t_puck = self.load_texture_2d(DATA_DIR_PATH + "T_Puck.png")
         self.t_boostpad = self.load_texture_2d(DATA_DIR_PATH + "T_BoostPad.png")
         self.t_boost_glow = self.load_texture_2d(DATA_DIR_PATH + "T_Boost_Glow.png")
         self.t_black = self.load_texture_2d(DATA_DIR_PATH + "T_Black.png")
@@ -434,12 +436,24 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
                     scale=2.5,
                 )
 
-        if True: # Render ball
+        if True: # Render ball/puck
             ball_phys = state.ball_state
             ball_pos = ball_phys.get_pos(interp_ratio)
+            
+            # Use puck model for snowday mode, ball for everything else
+            if state.gamemode == "snowday":
+                ball_model = 'Puck.obj'
+                ball_texture = self.t_puck
+            else:
+                ball_model = 'Ball.obj'
+                ball_texture = self.t_ball
+
+            ball_forward = ball_phys.get_forward(interp_ratio)
+            ball_up = ball_phys.get_up(interp_ratio)
+            
             self.render_model(
                 ball_pos,
-                ball_phys.get_forward(interp_ratio), ball_phys.get_up(interp_ratio), 'Ball.obj', self.t_ball,
+                ball_forward, ball_up, ball_model, ball_texture,
 
                 #outline_color = Vector4((1, 1, 1, 1))
             )
