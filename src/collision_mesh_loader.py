@@ -121,18 +121,20 @@ def load_collision_meshes_for_mode(base_dir: str, gamemode: str) -> Tuple[np.nda
         extent_x = 8900.0 / 3.0
         extent_y = 3581.0
         height = 1820.0
+        floor_extent_y = extent_y
         add_y_walls = True
     else:
         extent_x = 4096.0
         extent_y = 5120.0
         height = 2048.0
+        floor_extent_y = extent_y * 1.5
         add_y_walls = False
 
     floor = np.array([
-        [-extent_x, -extent_y, 0.0],
-        [extent_x, -extent_y, 0.0],
-        [extent_x, extent_y, 0.0],
-        [-extent_x, extent_y, 0.0],
+        [-extent_x, -floor_extent_y, 0.0],
+        [extent_x, -floor_extent_y, 0.0],
+        [extent_x, floor_extent_y, 0.0],
+        [-extent_x, floor_extent_y, 0.0],
     ], dtype="f4")
     ceiling = np.array([
         [-extent_x, -extent_y, height],
