@@ -566,6 +566,19 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
         ui_text = ""
         ui_text += "Render FPS: {}".format(self.last_fps) + "\n"
         ui_text += "Connected: {}".format(state.recv_time > 0) + "\n"
+        game_mode = state.gamemode if state.gamemode else "unknown"
+        ui_text += "Game Mode: {}".format(game_mode.replace("_", " ").title()) + "\n"
+        blue_count = 0
+        orange_count = 0
+        for car_state in state.car_states:
+            if car_state.team_num == 0:
+                blue_count += 1
+            elif car_state.team_num == 1:
+                orange_count += 1
+        if blue_count + orange_count > 0:
+            ui_text += "Game Type: {}v{}s".format(blue_count, orange_count) + "\n"
+        else:
+            ui_text += "Game Type: N/A" + "\n"
         if state.recv_interval > 0:
             ui_text += "Network rate: {:.2f}fps".format(1 / state.recv_interval) + "\n"
         ui_text += "Ball speed: {:.2f}kph".format(state.ball_state.prev_vel.length * (9 / 250)) + "\n"

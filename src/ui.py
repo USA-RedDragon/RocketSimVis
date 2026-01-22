@@ -140,7 +140,7 @@ class QEditConfigWidget(QWidget):
         super().update()
 
 class QUIBarWidget(QWidget):
-    SIZE = (150, 100)
+    SIZE = (200, 150)
 
     def __init__(self, parent_window):
         QWidget.__init__(self)
@@ -155,6 +155,8 @@ class QUIBarWidget(QWidget):
         vbox = QtWidgets.QFormLayout()
 
         self.text_label = QtWidgets.QLabel("...")
+        self.text_label.setWordWrap(True)
+        self.text_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         vbox.addWidget(self.text_label)
 
         self.edit_config_button = QtWidgets.QPushButton("Edit Settings")
