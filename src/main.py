@@ -677,19 +677,27 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
 
 
 g_socket_listener = None
-def run_socket_thread(port):
+def run_socket_thread(bind_addr, port):
     global g_socket_listener
     g_socket_listener = SocketListener()
-    g_socket_listener.run(port)
+    g_socket_listener.run(bind_addr, port)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="RocketSim Visualizer")
+    parser.add_argument("--port", "-p", type=int, default=9273, help="UDP port to listen on")
+    parser.add_argument("--bind", "-b", type=str, default="127.0.0.1", help="Address to bind the UDP socket to (e.g. 0.0.0.0 for all interfaces)")
+    return parser.parse_args()
 
 def main():
-    #cmd_args = arg_parser.parse_args()
-    port = 9273
+    args = parse_args()
+    port = args.port
+    bind_addr = args.bind
     
     print("Starting RocketSimVis...")
-
+    print(f"Binding UDP listener to {bind_addr}:{port}...")
     print("Starting socket thread...")
-    socket_thread = threading.Thread(target=run_socket_thread, args=(int(port),))
+    socket_thread = threading.Thread(target=run_socket_thread, args=(bind_addr, int(port)))
     socket_thread.start()
 
     print("Starting visualizer window...")

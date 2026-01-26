@@ -12,11 +12,11 @@ class SocketListener:
         self.buffer_size: int = 1024 * 1024
         self.should_run = True
 
-    def run(self, port_num: int):
+    def run(self, bind_addr: str, port_num: int):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind(('127.0.0.1', port_num))
+        sock.bind((bind_addr, port_num))
         sock.settimeout(0.5)
-        print("Created socket on port {}, listening...".format(port_num))
+        print("Created socket on {}:{}, listening...".format(bind_addr, port_num))
         prev_recv_time = time.time()
         while self.should_run:
             try:
