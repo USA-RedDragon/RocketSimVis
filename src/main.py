@@ -910,17 +910,29 @@ def main():
     
     if headless:
         # In headless mode, we need to initialize GL manually
-        # Set a fixed size for consistent rendering
-        gl_widget.setFixedSize(VideoRecorder.WIDTH, VideoRecorder.HEIGHT)
         if sys.platform == 'win32':
             # Windows: the offscreen plugin doesn't support OpenGL, so we
-            # must use a real window.  Move it offscreen so it's invisible
-            # but still receives paint events (hiding blocks them entirely).
-            gl_widget.move(-5000, -5000)
+            # must use a real window.  We render to an explicit FBO at full
+            # resolution regardless of widget size, so the window itself can
+            # be tiny.  We make it a frameless tool window (no taskbar entry)
+            # and set opacity to 0 so it is invisible.  It stays "shown" and
+            # on-screen so Qt considers it visible.
+            gl_widget.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint)
+            gl_widget.setAttribute(Qt.WA_ShowWithoutActivating)
+            gl_widget.setWindowOpacity(0.0)
+            gl_widget.resize(1, 1)
+            gl_widget.move(0, 0)
             gl_widget.show()
             app.processEvents()  # Ensure initializeGL() fires
+            # QTimer drives repaint() which synchronously invokes paintGL,
+            # bypassing the broken update() → paint-event path on Windows.
+            _headless_timer = QTimer()
+            _headless_timer.timeout.connect(gl_widget.repaint)
+            _headless_timer.start(1)  # ~1ms; paintGL self-throttles via queue
         else:
             # Linux/macOS: offscreen plugin works fine
+            # Set a fixed size for consistent rendering
+            gl_widget.setFixedSize(VideoRecorder.WIDTH, VideoRecorder.HEIGHT)
             gl_widget.show()
             app.processEvents()
         
