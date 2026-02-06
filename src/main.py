@@ -911,6 +911,10 @@ def main():
         # Set a fixed size for consistent 1080p rendering
         gl_widget.setFixedSize(VideoRecorder.WIDTH, VideoRecorder.HEIGHT)
         gl_widget.show()  # Required to create GL context even in offscreen mode
+        # Force Qt to process events so initializeGL() actually runs before
+        # we try to use self.ctx in set_recording_config().
+        # On Windows, show() doesn't trigger initializeGL() synchronously.
+        app.processEvents()
         
         if output_dir:
             gl_widget.set_recording_config(output_dir, headless=True, name=recording_name)
