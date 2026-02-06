@@ -835,8 +835,10 @@ def main():
     use_tcp = args.tcp
     
     if headless:
-        # Force offscreen rendering
-        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        # Force offscreen rendering (Linux/macOS only — Windows offscreen plugin
+        # doesn't support OpenGL, so we use a hidden window instead)
+        if sys.platform != 'win32':
+            os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
     print("Starting RocketSimVis...", file=sys.stderr, flush=True)
 
@@ -908,13 +910,19 @@ def main():
     
     if headless:
         # In headless mode, we need to initialize GL manually
-        # Set a fixed size for consistent 1080p rendering
+        # Set a fixed size for consistent rendering
         gl_widget.setFixedSize(VideoRecorder.WIDTH, VideoRecorder.HEIGHT)
-        gl_widget.show()  # Required to create GL context even in offscreen mode
-        # Force Qt to process events so initializeGL() actually runs before
-        # we try to use self.ctx in set_recording_config().
-        # On Windows, show() doesn't trigger initializeGL() synchronously.
-        app.processEvents()
+        if sys.platform == 'win32':
+            # Windows: the offscreen plugin doesn't support OpenGL, so we
+            # create a real window, trigger GL init, then hide it immediately.
+            gl_widget.show()
+            app.processEvents()  # Ensure initializeGL() fires
+            gl_widget.hide()
+            app.processEvents()
+        else:
+            # Linux/macOS: offscreen plugin works fine
+            gl_widget.show()
+            app.processEvents()
         
         if output_dir:
             gl_widget.set_recording_config(output_dir, headless=True, name=recording_name)
