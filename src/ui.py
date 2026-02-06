@@ -320,8 +320,8 @@ class QPlayerRewardsWidget(QWidget):
         self.setAttribute(Qt.WA_StyledBackground)
         self.setAutoFillBackground(True)
         
-        # Allow horizontal expansion
-        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        # Allow horizontal expansion, minimize vertical
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
         
         self.layout = QtWidgets.QVBoxLayout(self)
         self.layout.setContentsMargins(4, 4, 4, 4)
@@ -330,22 +330,47 @@ class QPlayerRewardsWidget(QWidget):
         # Header with player info
         self.header = QtWidgets.QLabel("Player")
         self.header.setAlignment(Qt.AlignCenter)
+        self.header.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.layout.addWidget(self.header)
         
         # Total reward display (instant + cumulative)
         self.total_label = QtWidgets.QLabel("Instant: 0.000 | Episode: 0.00")
         self.total_label.setAlignment(Qt.AlignCenter)
         self.total_label.setStyleSheet("font-weight: bold;")
+        self.total_label.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.layout.addWidget(self.total_label)
         
-        # Column headers
-        self.column_header = QtWidgets.QLabel("")
-        self.column_header.setAlignment(Qt.AlignLeft)
-        self.column_header.setStyleSheet("color: #888; font-size: 9pt;")
-        self.layout.addWidget(self.column_header)
+        # Column headers - use horizontal layout for proper proportional sizing
+        self.column_header_widget = QWidget()
+        self.column_header_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.column_header_widget.setStyleSheet("QWidget { border: none; background: transparent; }")
+        column_header_layout = QtWidgets.QHBoxLayout(self.column_header_widget)
+        column_header_layout.setContentsMargins(2, 0, 2, 0)
+        column_header_layout.setSpacing(0)
+        
+        # Create header labels matching bar proportions (35%, 20%, 15%, 15%, 15%)
+        header_style = "color: #888; font-size: 9pt; border: none; background: transparent;"
+        
+        name_header = QtWidgets.QLabel("")
+        name_header.setStyleSheet(header_style)
+        column_header_layout.addWidget(name_header, 35)  # 35% stretch
+        
+        instant_header = QtWidgets.QLabel("Instant")
+        instant_header.setStyleSheet(header_style)
+        instant_header.setAlignment(Qt.AlignCenter)
+        column_header_layout.addWidget(instant_header, 35)  # 20% + 15% = 35% for both bar and value
+        
+        episode_header = QtWidgets.QLabel("Episode")
+        episode_header.setStyleSheet(header_style)
+        episode_header.setAlignment(Qt.AlignCenter)
+        column_header_layout.addWidget(episode_header, 30)  # 15% + 15% = 30% for both bar and value
+        
+        self.layout.addWidget(self.column_header_widget)
         
         # Container for reward bars
         self.bars_container = QWidget()
+        self.bars_container.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
+        self.bars_container.setStyleSheet("QWidget { border: none; }")
         self.bars_layout = QtWidgets.QVBoxLayout(self.bars_container)
         self.bars_layout.setContentsMargins(0, 0, 0, 0)
         self.bars_layout.setSpacing(1)
@@ -372,9 +397,6 @@ class QPlayerRewardsWidget(QWidget):
         sign_i = "+" if total_reward >= 0 else ""
         sign_c = "+" if cumulative_total >= 0 else ""
         self.total_label.setText(f"Instant: {sign_i}{total_reward:.3f}  |  Episode: {sign_c}{cumulative_total:.2f}")
-        
-        # Column headers
-        self.column_header.setText("                                      Instant                    Episode")
         
         # Find max absolute values for scaling bars
         max_abs_instant = 0.1
@@ -410,9 +432,10 @@ class QPlayerRewardsWidget(QWidget):
 
 
 class QRewardsPanelWidget(QWidget):
-    """Panel showing per-player reward information - resizable"""
+    """Panel showing per-player reward information - resizable, movable, collapsible"""
     
     RESIZE_MARGIN = 8  # Pixels from edge to trigger resize
+    TITLE_HEIGHT = 28  # Height of the title bar for dragging
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -422,21 +445,55 @@ class QRewardsPanelWidget(QWidget):
         # Enable mouse tracking for resize cursor
         self.setMouseTracking(True)
         
-        # Resize state
+        # Interaction state
         self._resizing = False
-        self._resize_edge = None  # 'left', 'bottom', 'corner'
+        self._moving = False
+        self._resize_edge = None  # 'left', 'right', 'top', 'bottom', or corners like 'top-left'
         self._drag_start_pos = None
         self._drag_start_geometry = None
+        self._collapsed = False
+        self._expanded_height = 0  # Remember height when collapsing
         
         self.layout = QtWidgets.QVBoxLayout(self)
         self.layout.setContentsMargins(6, 6, 6, 6)
         self.layout.setSpacing(4)
         
+        # Title bar with collapse button
+        self.title_bar = QWidget()
+        self.title_bar.setFixedHeight(round(self.TITLE_HEIGHT * get_scaling_factor()))
+        self.title_bar.setCursor(Qt.SizeAllCursor)  # Indicate movable
+        self.title_bar.setStyleSheet("QWidget { background: transparent; border: none; }")
+        title_layout = QtWidgets.QHBoxLayout(self.title_bar)
+        title_layout.setContentsMargins(4, 0, 4, 0)
+        title_layout.setSpacing(4)
+        
+        # Collapse button
+        self.collapse_btn = QtWidgets.QPushButton("-")
+        self.collapse_btn.setFixedSize(round(20 * get_scaling_factor()), round(20 * get_scaling_factor()))
+        self.collapse_btn.setStyleSheet("QPushButton { font-size: 12pt; font-weight: bold; padding: 0; padding-bottom: 2px; }")
+        self.collapse_btn.clicked.connect(self._toggle_collapse)
+        self.collapse_btn.setCursor(Qt.PointingHandCursor)
+        title_layout.addWidget(self.collapse_btn)
+        
         # Title
-        self.title = QtWidgets.QLabel("Rewards (drag edges to resize)")
+        self.title = QtWidgets.QLabel("Rewards")
         self.title.setAlignment(Qt.AlignCenter)
-        self.title.setStyleSheet("font-weight: bold; font-size: 11pt;")
-        self.layout.addWidget(self.title)
+        self.title.setStyleSheet("font-weight: bold; font-size: 11pt; border: none; background: transparent;")
+        title_layout.addWidget(self.title, 1)  # Stretch to fill
+        
+        # Spacer to balance the collapse button
+        spacer = QWidget()
+        spacer.setFixedWidth(round(20 * get_scaling_factor()))
+        title_layout.addWidget(spacer)
+        
+        self.layout.addWidget(self.title_bar)
+        
+        # Content container (for collapse functionality)
+        self.content_widget = QWidget()
+        self.content_widget.setStyleSheet("QWidget { border: none; }")
+        self.content_layout = QtWidgets.QVBoxLayout(self.content_widget)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(4)
         
         # Scroll area for player widgets
         self.scroll_area = QtWidgets.QScrollArea()
@@ -447,25 +504,48 @@ class QRewardsPanelWidget(QWidget):
         
         # Container for player reward widgets
         self.players_container = QWidget()
+        self.players_container.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
+        self.players_container.setStyleSheet("QWidget { border: none; }")
         self.players_layout = QtWidgets.QVBoxLayout(self.players_container)
         self.players_layout.setContentsMargins(0, 0, 0, 0)
         self.players_layout.setSpacing(6)
         self.scroll_area.setWidget(self.players_container)
         
-        self.layout.addWidget(self.scroll_area)
+        self.content_layout.addWidget(self.scroll_area)
+        self.layout.addWidget(self.content_widget)
         
         self.player_widgets: list[QPlayerRewardsWidget] = []
         
         # Set minimum and default size
         self.setMinimumWidth(round(300 * get_scaling_factor()))
-        self.setMinimumHeight(round(200 * get_scaling_factor()))
+        self.setMinimumHeight(round(50 * get_scaling_factor()))  # Smaller min for collapsed state
         self._default_width = round(550 * get_scaling_factor())
         self._default_height = round(500 * get_scaling_factor())
         self.resize(self._default_width, self._default_height)
         self._first_show = True
+        self._auto_sized = False  # Track if we've auto-sized to content
         
         global _g_rewards_panel
         _g_rewards_panel = self
+    
+    def _toggle_collapse(self):
+        """Toggle the collapsed state of the panel"""
+        self._collapsed = not self._collapsed
+        if self._collapsed:
+            self._expanded_height = self.height()
+            self.content_widget.hide()
+            self.collapse_btn.setText("+")
+            # Resize to just show title bar
+            collapsed_height = self.title_bar.height() + self.layout.contentsMargins().top() + self.layout.contentsMargins().bottom() + 4
+            self.setFixedHeight(collapsed_height)
+        else:
+            self.setMinimumHeight(round(50 * get_scaling_factor()))
+            self.setMaximumHeight(16777215)  # Reset to default max
+            self.content_widget.show()
+            self.collapse_btn.setText("-")
+            # Restore previous height
+            if self._expanded_height > 0:
+                self.resize(self.width(), self._expanded_height)
     
     def showEvent(self, event):
         """Position panel when first shown"""
@@ -479,22 +559,44 @@ class QRewardsPanelWidget(QWidget):
     
     def _get_resize_edge(self, pos):
         """Determine which edge/corner the mouse is near"""
+        if self._collapsed:
+            return None  # No resizing when collapsed
+            
         margin = self.RESIZE_MARGIN
         rect = self.rect()
         
         near_left = pos.x() < margin
+        near_right = pos.x() > rect.width() - margin
+        near_top = pos.y() < margin
         near_bottom = pos.y() > rect.height() - margin
         
-        if near_left and near_bottom:
-            return 'corner'
-        elif near_left:
+        # Corners first
+        if near_top and near_left:
+            return 'top-left'
+        if near_top and near_right:
+            return 'top-right'
+        if near_bottom and near_left:
+            return 'bottom-left'
+        if near_bottom and near_right:
+            return 'bottom-right'
+        # Edges
+        if near_left:
             return 'left'
-        elif near_bottom:
+        if near_right:
+            return 'right'
+        if near_top:
+            return 'top'
+        if near_bottom:
             return 'bottom'
         return None
     
+    def _is_in_title_bar(self, pos):
+        """Check if position is in the title bar (for dragging)"""
+        return pos.y() < self.title_bar.height() + self.layout.contentsMargins().top()
+    
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            # Check for resize first
             edge = self._get_resize_edge(event.pos())
             if edge:
                 self._resizing = True
@@ -503,6 +605,15 @@ class QRewardsPanelWidget(QWidget):
                 self._drag_start_geometry = self.geometry()
                 event.accept()
                 return
+            
+            # Check for title bar drag (move)
+            if self._is_in_title_bar(event.pos()):
+                self._moving = True
+                self._drag_start_pos = event.globalPos()
+                self._drag_start_geometry = self.geometry()
+                event.accept()
+                return
+                
         super().mousePressEvent(event)
     
     def mouseMoveEvent(self, event):
@@ -510,14 +621,24 @@ class QRewardsPanelWidget(QWidget):
             delta = event.globalPos() - self._drag_start_pos
             geom = QRect(self._drag_start_geometry)
             
-            if self._resize_edge in ('left', 'corner'):
-                # Resize from left edge (panel is on right side, so left = width change)
+            # Handle horizontal resizing
+            if 'left' in self._resize_edge:
                 new_width = geom.width() - delta.x()
                 new_width = max(new_width, self.minimumWidth())
                 new_left = geom.right() - new_width + 1
                 geom.setLeft(new_left)
+            elif 'right' in self._resize_edge:
+                new_width = geom.width() + delta.x()
+                new_width = max(new_width, self.minimumWidth())
+                geom.setWidth(new_width)
             
-            if self._resize_edge in ('bottom', 'corner'):
+            # Handle vertical resizing
+            if 'top' in self._resize_edge:
+                new_height = geom.height() - delta.y()
+                new_height = max(new_height, self.minimumHeight())
+                new_top = geom.bottom() - new_height + 1
+                geom.setTop(new_top)
+            elif 'bottom' in self._resize_edge:
                 new_height = geom.height() + delta.y()
                 new_height = max(new_height, self.minimumHeight())
                 geom.setHeight(new_height)
@@ -525,28 +646,47 @@ class QRewardsPanelWidget(QWidget):
             self.setGeometry(geom)
             event.accept()
             return
+        elif self._moving and self._drag_start_pos:
+            delta = event.globalPos() - self._drag_start_pos
+            new_pos = self._drag_start_geometry.topLeft() + delta
+            
+            # Constrain to parent bounds
+            if self.parent():
+                parent_rect = self.parent().rect()
+                new_pos.setX(max(0, min(new_pos.x(), parent_rect.width() - self.width())))
+                new_pos.setY(max(0, min(new_pos.y(), parent_rect.height() - self.height())))
+            
+            self.move(new_pos)
+            event.accept()
+            return
         else:
             # Update cursor based on position
             edge = self._get_resize_edge(event.pos())
-            if edge == 'corner':
+            if edge in ('top-left', 'bottom-right'):
+                self.setCursor(Qt.SizeFDiagCursor)
+            elif edge in ('top-right', 'bottom-left'):
                 self.setCursor(Qt.SizeBDiagCursor)
-            elif edge == 'left':
+            elif edge in ('left', 'right'):
                 self.setCursor(Qt.SizeHorCursor)
-            elif edge == 'bottom':
+            elif edge in ('top', 'bottom'):
                 self.setCursor(Qt.SizeVerCursor)
+            elif self._is_in_title_bar(event.pos()):
+                self.setCursor(Qt.SizeAllCursor)
             else:
                 self.setCursor(Qt.ArrowCursor)
         
         super().mouseMoveEvent(event)
     
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton and self._resizing:
-            self._resizing = False
-            self._resize_edge = None
-            self._drag_start_pos = None
-            self._drag_start_geometry = None
-            event.accept()
-            return
+        if event.button() == Qt.LeftButton:
+            if self._resizing or self._moving:
+                self._resizing = False
+                self._moving = False
+                self._resize_edge = None
+                self._drag_start_pos = None
+                self._drag_start_geometry = None
+                event.accept()
+                return
         super().mouseReleaseEvent(event)
     
     def leaveEvent(self, event):
@@ -600,7 +740,37 @@ class QRewardsPanelWidget(QWidget):
             )
             self.player_widgets[i].show()
         
-        # Don't call adjustSize() - let user control the size via drag handles
+        # Auto-size to fit content on first data update (but respect user resizing after)
+        if not self._auto_sized and not self._collapsed:
+            self._auto_sized = True
+            # Calculate ideal size based on content
+            self.players_container.adjustSize()
+            content_hint = self.players_container.sizeHint()
+            
+            # Add margins and title bar
+            margins = self.layout.contentsMargins()
+            ideal_height = (content_hint.height() + 
+                           self.title_bar.height() + 
+                           margins.top() + margins.bottom() + 
+                           self.content_layout.spacing() + 20)  # Extra padding
+            ideal_width = max(content_hint.width() + margins.left() + margins.right() + 20,
+                             self.minimumWidth())
+            
+            # Constrain to reasonable bounds
+            if self.parent():
+                max_height = self.parent().height() - 40
+                max_width = self.parent().width() - 40
+                ideal_height = min(ideal_height, max_height)
+                ideal_width = min(ideal_width, max_width)
+            
+            ideal_height = max(ideal_height, round(200 * get_scaling_factor()))
+            
+            self.resize(ideal_width, ideal_height)
+            
+            # Reposition to top-right after resize
+            if self.parent():
+                new_x = self.parent().width() - self.width() - 10
+                self.move(max(10, new_x), 10)
 
 
 def get_rewards_panel() -> Optional[QRewardsPanelWidget]:
