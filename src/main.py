@@ -18,6 +18,7 @@ import ui
 from ui import get_ui, get_rewards_panel, QUIBarWidget, QRSVWindow
 from config import Config, ConfigVal
 from collision_mesh_loader import find_collision_mesh_root, load_collision_meshes_for_mode
+from video_recorder import VideoRecorder
 
 import moderngl
 import moderngl_window
@@ -176,6 +177,37 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
 
         print("Done.")
 
+        # Video recording setup (configured later via set_recording_config)
+        self.video_recorder = None
+        self._headless = False
+        self._headless_fbo = None
+        self._headless_first_state = True  # Skip first state (no valid prev for interpolation)
+        self._shutdown_requested = False  # Set by SIGTERM handler, checked in paintGL
+        # Render target: ctx.screen by default, replaced with explicit FBO in headless mode
+        self._render_target = self.ctx.screen
+
+    def set_recording_config(self, output_dir: str, headless: bool = False, name: str = ""):
+        """Configure video recording.
+        
+        Args:
+            output_dir: Directory where recordings will be saved.
+            headless: If True, the widget will exit after episode_end.
+            name: Optional name prefix for the recording file.
+        """
+        self.video_recorder = VideoRecorder(output_dir, name=name)
+        self._headless = headless
+        if headless:
+            # Create an explicit offscreen FBO since Qt's QOpenGLWidget
+            # renders to its own internal FBO, not FBO 0.
+            # ctx.screen.read() reads FBO 0 which is empty in offscreen mode.
+            color_attachment = self.ctx.renderbuffer((VideoRecorder.WIDTH, VideoRecorder.HEIGHT), components=4)
+            depth_attachment = self.ctx.depth_renderbuffer((VideoRecorder.WIDTH, VideoRecorder.HEIGHT))
+            self._headless_fbo = self.ctx.framebuffer(
+                color_attachments=[color_attachment],
+                depth_attachment=depth_attachment
+            )
+            self._render_target = self._headless_fbo
+
     def load_vao(self, model_name, program = None):
         loader = wvf.Loader(wvf.SceneDescription(path = DATA_DIR_PATH + "/" + model_name))
         model = loader.load()
@@ -260,7 +292,7 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
         else:
             self.t_none.use()
 
-        self.ctx.screen.use()
+        self._render_target.use()
         self.vaos[model_name].render(mode, vertices=(-1 if (vert_amount is None) else vert_amount))
 
         if outline_color is not None:
@@ -400,11 +432,97 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
     def paintGL(self):
         pixel_ratio = self.devicePixelRatioF()
         width, height = int(self.width() * pixel_ratio), int(self.height() * pixel_ratio)
+
+        if self._headless:
+            # In headless mode, always use the FBO's fixed resolution
+            # (Qt's widget size is meaningless in offscreen mode)
+            width, height = VideoRecorder.WIDTH, VideoRecorder.HEIGHT
+
         self.ctx.viewport = (0, 0, width, height)
 
         cur_time = time.time()
         delta_time = cur_time - self.last_render_time
-        self.render(cur_time, delta_time, width, height)
+
+        if self._headless and g_socket_listener is not None:
+            # In headless mode, pop the next buffered state from the queue
+            entry = g_socket_listener.pop_state()
+            if entry is None:
+                # No data yet — check if we should shut down
+                # Only shut down when the queue is empty, so we don't
+                # discard frames that are still queued.
+                if self._shutdown_requested:
+                    if self.video_recorder is not None and self.video_recorder.is_recording:
+                        self.video_recorder.stop()
+                    QtWidgets.QApplication.instance().quit()
+                    return
+                # Otherwise schedule another paint and return
+                self.last_render_time = cur_time
+                self.update()
+                return
+
+            j, recv_time, recv_interval = entry
+            with global_state_mutex:
+                try:
+                    global_state_manager.state.read_from_json(j)
+                except:
+                    import traceback
+                    print("ERROR reading buffered JSON:", flush=True)
+                    traceback.print_exc()
+
+            game_dt = global_state_manager.state.delta_time
+
+            # The very first state has no valid "previous" positions for
+            # interpolation (prev_pos is at the origin), so skip it.
+            # read_from_json shifts next→prev, so after this the second
+            # state will have correct prev values to interpolate from.
+            if self._headless_first_state:
+                self._headless_first_state = False
+                self.last_render_time = cur_time
+                self.update()
+                return
+
+            # Start recording BEFORE the first render so no frame is missed
+            if self.video_recorder is not None and not self.video_recorder.is_recording:
+                self.video_recorder.start()
+
+            if self.video_recorder is not None and self.video_recorder.is_recording:
+                # Compute how many video frames this game state should produce.
+                # With tickSkip=8 at 120Hz, delta_time=0.0667s → ~4 frames at 60fps.
+                num_frames = self.video_recorder.calc_frame_count(game_dt)
+
+                for i in range(num_frames):
+                    # Set recv_time/recv_interval to drive the interpolation ratio
+                    # inside render(). render() computes:
+                    #   interp_ratio = (time.time() - recv_time) / recv_interval
+                    # We want interp_ratio = (i + 1) / num_frames for sub-frame i.
+                    target_ratio = (i + 1) / num_frames
+                    now = time.time()
+                    with global_state_mutex:
+                        global_state_manager.state.recv_interval = game_dt
+                        global_state_manager.state.recv_time = now - target_ratio * game_dt
+
+                    self.render(now, game_dt / num_frames, width, height)
+
+                    # Read from the render target FBO
+                    self.ctx.finish()
+                    raw = self._render_target.read(components=3)
+                    pixels = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 3)
+                    pixels = np.flipud(pixels)
+                    self.video_recorder.write_single_frame(pixels)
+
+                # Check for episode end to stop recording.
+                # Note: we do NOT check _shutdown_requested here — that is only
+                # checked when the queue is empty (above), so that SIGTERM
+                # doesn't discard frames still queued for rendering.
+                if global_state_manager.state.episode_end:
+                    frames = self.video_recorder.frame_count if self.video_recorder else 0
+                    print(f"[Headless] Episode end, {frames} frames written", file=sys.stderr, flush=True)
+                    self.video_recorder.stop()
+                    QtWidgets.QApplication.instance().quit()
+                    return
+        else:
+            # Normal (non-headless) mode
+            self.render(cur_time, delta_time, width, height)
 
         self.fps_counter += 1
 
@@ -438,6 +556,7 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
         if not (self.outline_renderer is None):
             self.outline_renderer.clear()
 
+        self._render_target.use()  # Bind render target before clearing/drawing
         self.ctx.clear(0, 0, 0)
         self.ctx.enable(moderngl.DEPTH_TEST)
         self.ctx.enable(moderngl.BLEND)
@@ -446,8 +565,7 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
         self.ctx.front_face = "cw"
         self.ctx.enable(moderngl.CULL_FACE)
 
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA) # Normal blending
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR) # Use linear interpolation of pixels for supersampling
+        self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
 
         camera_pos, camera_target_pos, camera_fov = self.calc_camera_state(state, interp_ratio, delta_time)
         proj = Matrix44.perspective_projection(camera_fov, -width/height, 0.1, 50 * 1000.0)
@@ -639,7 +757,7 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
         for key, value in state.custom_info:
             ui_text += "{}: {}\n".format(key, value)
             
-        get_ui().set_text(ui_text)
+        get_ui().set_text(ui_text) if get_ui() else None
         
         # Update rewards panel
         rewards_panel = ui.get_rewards_panel()
@@ -678,41 +796,136 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
 
 
 g_socket_listener = None
-def run_socket_thread(bind_addr, port):
+def run_socket_thread(bind_addr, port, fd=None):
     global g_socket_listener
     g_socket_listener = SocketListener()
-    g_socket_listener.run(bind_addr, port)
+    if fd is not None:
+        g_socket_listener.run_from_fd(fd)
+    else:
+        g_socket_listener.run(bind_addr, port)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="RocketSim Visualizer")
-    parser.add_argument("--port", "-p", type=int, default=9273, help="UDP port to listen on")
-    parser.add_argument("--bind", "-b", type=str, default="127.0.0.1", help="Address to bind the UDP socket to (e.g. 0.0.0.0 for all interfaces)")
+    parser.add_argument("--port", "-p", type=int, default=9273, help="UDP port to listen on (0 = random)")
+    parser.add_argument("--bind", "-b", type=str, default="::1", help="Address to bind the UDP socket to (e.g. :: for all interfaces)")
+    parser.add_argument("--fd", type=int, default=None, help="Inherited socketpair fd for lossless state delivery (overrides --port/--bind)")
+    parser.add_argument("--headless", action="store_true", help="Run offscreen for video recording (no window)")
+    parser.add_argument("--output", "-o", type=str, default="", help="Output directory for video recordings")
+    parser.add_argument("--name", "-n", type=str, default="", help="Recording name prefix (e.g. timestep count)")
     return parser.parse_args()
 
 def main():
     args = parse_args()
     port = args.port
     bind_addr = args.bind
+    headless = args.headless
+    output_dir = args.output
+    recording_name = args.name
+    sock_fd = args.fd
     
-    print("Starting RocketSimVis...")
-    print(f"Binding UDP listener to {bind_addr}:{port}...")
-    print("Starting socket thread...")
-    socket_thread = threading.Thread(target=run_socket_thread, args=(bind_addr, int(port)))
-    socket_thread.start()
+    if headless:
+        # Force offscreen rendering
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
-    print("Starting visualizer window...")
+    print("Starting RocketSimVis...", file=sys.stderr, flush=True)
+
+    if sock_fd is not None:
+        # Lossless mode: use inherited socketpair fd
+        print(f"Using inherited socketpair fd {sock_fd}...", file=sys.stderr, flush=True)
+        socket_thread = threading.Thread(target=run_socket_thread, args=(bind_addr, int(port)), kwargs={"fd": sock_fd})
+        socket_thread.start()
+        # Wait briefly for g_socket_listener to be created
+        import time as _time
+        for _ in range(100):
+            if g_socket_listener is not None:
+                break
+            _time.sleep(0.05)
+    else:
+        print(f"Binding UDP listener to {bind_addr}:{port}...", file=sys.stderr, flush=True)
+        print("Starting socket thread...", file=sys.stderr, flush=True)
+        socket_thread = threading.Thread(target=run_socket_thread, args=(bind_addr, int(port)))
+        socket_thread.start()
+
+        # Wait for socket to be ready and get the actual port
+        import time as _time
+        for _ in range(100):  # Wait up to 5 seconds
+            if g_socket_listener is not None and hasattr(g_socket_listener, 'actual_port') and g_socket_listener.actual_port > 0:
+                break
+            _time.sleep(0.05)
+
+    if headless and g_socket_listener is not None:
+        g_socket_listener.enable_headless_buffer()
+    
+    if sock_fd is None:
+        actual_port = g_socket_listener.actual_port if g_socket_listener else port
+        
+        if headless:
+            # Print the port on stdout for the parent process to read
+            print(f"PORT:{actual_port}", flush=True)
+            # Redirect subsequent stdout to stderr so only PORT line goes to parent
+            sys.stdout = sys.stderr
+
+        print(f"Listening on port {actual_port}", file=sys.stderr, flush=True)
+    else:
+        if headless:
+            # No port to report — redirect stdout to stderr
+            sys.stdout = sys.stderr
+        print(f"Listening on socketpair fd {sock_fd}", file=sys.stderr, flush=True)
+
+    print("Starting visualizer...", file=sys.stderr, flush=True)
 
     app = QtWidgets.QApplication([])
-    ui.update_scaling_factor(app)
+    
+    if not headless:
+        ui.update_scaling_factor(app)
 
-    window = QRSVWindow(QRSVGLWidget(app.primaryScreen()))
-    window.showNormal()
+    gl_widget = QRSVGLWidget(app.primaryScreen())
+    
+    if headless:
+        # In headless mode, we need to initialize GL manually
+        # Set a fixed size for consistent 1080p rendering
+        gl_widget.setFixedSize(VideoRecorder.WIDTH, VideoRecorder.HEIGHT)
+        gl_widget.show()  # Required to create GL context even in offscreen mode
+        
+        if output_dir:
+            gl_widget.set_recording_config(output_dir, headless=True, name=recording_name)
+        else:
+            # Default output dir
+            base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            gl_widget.set_recording_config(os.path.join(base_path, "recordings"), headless=True, name=recording_name)
+    
+    if not headless:
+        window = QRSVWindow(gl_widget)
+        window.showNormal()
+
+    # Register cleanup to ensure video files are properly finalized
+    # even if the process is killed or exits abnormally
+    import atexit
+    import signal
+
+    def cleanup_recorder():
+        if hasattr(gl_widget, 'video_recorder') and gl_widget.video_recorder is not None:
+            gl_widget.video_recorder.stop()
+
+    atexit.register(cleanup_recorder)
+
+    def sigterm_handler(signum, frame):
+        print("Received SIGTERM, will finalize video...", file=sys.stderr, flush=True)
+        # Don't do any I/O here — just set a flag.
+        # paintGL checks this flag and does a clean stop on the main thread,
+        # avoiding reentrant BufferedWriter crashes.
+        gl_widget._shutdown_requested = True
+
+    signal.signal(signal.SIGTERM, sigterm_handler)
+
     app.exec_()
 
-    print("Shutting down...")
-    g_socket_listener.stop_async()
-    exit()
+    print("Shutting down...", file=sys.stderr, flush=True)
+    cleanup_recorder()
+    if g_socket_listener is not None:
+        g_socket_listener.stop_async()
+    sys.exit(0)
 
 if __name__ == "__main__":
     main()

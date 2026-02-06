@@ -193,20 +193,12 @@ class CarState:
         
         self.player_rewards: PlayerRewards = PlayerRewards()
 
-    def read_from_json(self, j):
+    def read_from_json(self, j, episode_end: bool = False):
         if not (j.get("car_id") is None):
             self.car_id = j["car_id"]
         self.team_num = j["team_num"]
 
-        # Check for teleport/reset before updating physics
-        old_pos = self.phys.next_pos
         self.phys.read_from_json(j["phys"])
-        
-        # Detect episode reset: large position change indicates reset
-        if old_pos is not None:
-            delta = (self.phys.next_pos - old_pos).length
-            if delta > 3000:  # Teleport threshold
-                self.player_rewards.reset_cumulative()
 
         if not (j.get("controls") is None):
             self.controls.read_from_json(j["controls"])
@@ -222,6 +214,11 @@ class CarState:
         
         # Parse reward info if available
         self.player_rewards.read_from_json(j)
+        
+        # Reset cumulative rewards AFTER parsing this frame's rewards,
+        # so the reset takes effect for the next episode's first frame
+        if episode_end:
+            self.player_rewards.reset_cumulative()
 
 # From RLGym
 default_boost_pad_locations = (
@@ -275,6 +272,12 @@ class GameState:
         
         # Custom info lines from the sender for UI display
         self.custom_info: list[tuple[str, str]] = []
+        
+        # Episode boundary signal from the training pipeline
+        self.episode_end: bool = False
+        
+        # Game time delta per state update
+        self.delta_time: float = 0.0
 
     def is_boost_big(self, idx):
         z = self.boost_pad_locations[idx].z
@@ -290,17 +293,18 @@ class GameState:
         self.ball_state.read_from_json(j["ball_phys"])
 
         j_cars = j["cars"]
+        episode_end = j.get("episode_end", False)
         if len(self.car_states) != len(j_cars):
             # Car amount changed, remake cars array
             self.car_states = []
             for j_car in j_cars:
                 car_state = CarState()
-                car_state.read_from_json(j_car)
+                car_state.read_from_json(j_car, episode_end)
                 self.car_states.append(car_state)
         else:
             # Update the cars we already have
             for i in range(len(self.car_states)):
-                self.car_states[i].read_from_json(j_cars[i])
+                self.car_states[i].read_from_json(j_cars[i], episode_end)
 
             if not (j.get("gamemode") is None):
                 self.gamemode = j["gamemode"].lower()
@@ -372,3 +376,9 @@ class GameState:
                 key = entry.get("key", "")
                 value = entry.get("value", "")
                 self.custom_info.append((key, value))
+        
+        # Episode boundary signal
+        self.episode_end = j.get("episode_end", False)
+
+        # Game time delta for this state update
+        self.delta_time = j.get("delta_time", 0.0)
