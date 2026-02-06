@@ -14,6 +14,7 @@ class SocketListener:
         self.buffer_size: int = 1024 * 1024
         self.should_run = True
         self.actual_port: int = 0
+        self.connection_closed: bool = False  # Set when stream (socketpair/TCP) reaches EOF
         # Headless buffering: when enabled, parsed JSON dicts are queued
         # so the render loop can consume them one at a time
         self._headless_buffer = False
@@ -117,6 +118,44 @@ class SocketListener:
         os.close(fd)  # fromfd() duplicated the fd; close the original
         sock.settimeout(0.5)
         print(f"Listening on inherited socketpair fd {fd}...")
+        self._run_stream_loop(sock, f"socketpair fd {fd}")
+
+    def run_from_tcp(self):
+        """Listen on a TCP port on localhost, accept one connection, and read
+        length-prefixed JSON frames.  Prints the chosen port to stdout so the
+        parent C++ process can connect."""
+        import struct
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        self.actual_port = srv.getsockname()[1]
+        # The parent reads this line on stdout to know which port to connect to
+        print(f"TCP_PORT:{self.actual_port}", flush=True)
+        print(f"TCP listener waiting for connection on 127.0.0.1:{self.actual_port}...",
+              file=__import__('sys').stderr, flush=True)
+        srv.settimeout(30.0)  # Wait up to 30s for the C++ side to connect
+        try:
+            conn, addr = srv.accept()
+        except socket.timeout:
+            print("ERROR: No TCP connection received within 30 seconds, giving up.",
+                  file=__import__('sys').stderr, flush=True)
+            srv.close()
+            return
+        srv.close()
+        conn.settimeout(0.5)
+        # Increase receive buffer
+        try:
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+        except OSError:
+            pass
+        print(f"TCP connection accepted from {addr}",
+              file=__import__('sys').stderr, flush=True)
+        self._run_stream_loop(conn, f"TCP {addr}")
+
+    def _run_stream_loop(self, sock, label: str):
+        """Shared loop for reading length-prefixed JSON from a SOCK_STREAM socket."""
+        import struct
         prev_recv_time = time.time()
         while self.should_run:
             # Read 4-byte length header
@@ -125,7 +164,7 @@ class SocketListener:
                 if not self.should_run:
                     break
                 # EOF from parent — treat as shutdown
-                print("Socketpair EOF, shutting down listener.", flush=True)
+                print(f"{label} EOF, shutting down listener.", flush=True)
                 break
 
             (msg_len,) = struct.unpack("!I", hdr)
@@ -168,3 +207,4 @@ class SocketListener:
                 prev_recv_time = recv_time
 
         sock.close()
+        self.connection_closed = True

@@ -450,7 +450,13 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
                 # No data yet — check if we should shut down
                 # Only shut down when the queue is empty, so we don't
                 # discard frames that are still queued.
-                if self._shutdown_requested:
+                # On Linux, SIGTERM sets _shutdown_requested.
+                # On Windows, the C++ side closes the TCP socket, causing
+                # connection_closed to be set when the stream loop exits.
+                should_stop = self._shutdown_requested
+                if not should_stop and g_socket_listener is not None:
+                    should_stop = g_socket_listener.connection_closed
+                if should_stop:
                     if self.video_recorder is not None and self.video_recorder.is_recording:
                         self.video_recorder.stop()
                     QtWidgets.QApplication.instance().quit()
@@ -796,10 +802,12 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
 
 
 g_socket_listener = None
-def run_socket_thread(bind_addr, port, fd=None):
+def run_socket_thread(bind_addr, port, fd=None, tcp=False):
     global g_socket_listener
     g_socket_listener = SocketListener()
-    if fd is not None:
+    if tcp:
+        g_socket_listener.run_from_tcp()
+    elif fd is not None:
         g_socket_listener.run_from_fd(fd)
     else:
         g_socket_listener.run(bind_addr, port)
@@ -810,6 +818,7 @@ def parse_args():
     parser.add_argument("--port", "-p", type=int, default=9273, help="UDP port to listen on (0 = random)")
     parser.add_argument("--bind", "-b", type=str, default="::1", help="Address to bind the UDP socket to (e.g. :: for all interfaces)")
     parser.add_argument("--fd", type=int, default=None, help="Inherited socketpair fd for lossless state delivery (overrides --port/--bind)")
+    parser.add_argument("--tcp", action="store_true", help="Use TCP loopback for lossless state delivery (Windows-compatible, overrides --port/--bind)")
     parser.add_argument("--headless", action="store_true", help="Run offscreen for video recording (no window)")
     parser.add_argument("--output", "-o", type=str, default="", help="Output directory for video recordings")
     parser.add_argument("--name", "-n", type=str, default="", help="Recording name prefix (e.g. timestep count)")
@@ -823,6 +832,7 @@ def main():
     output_dir = args.output
     recording_name = args.name
     sock_fd = args.fd
+    use_tcp = args.tcp
     
     if headless:
         # Force offscreen rendering
@@ -830,7 +840,21 @@ def main():
 
     print("Starting RocketSimVis...", file=sys.stderr, flush=True)
 
-    if sock_fd is not None:
+    if use_tcp:
+        # TCP loopback mode (cross-platform lossless)
+        print("Using TCP loopback mode...", file=sys.stderr, flush=True)
+        socket_thread = threading.Thread(target=run_socket_thread, args=(bind_addr, int(port)), kwargs={"tcp": True})
+        socket_thread.start()
+        # Wait for g_socket_listener to be created and TCP_PORT printed
+        import time as _time
+        for _ in range(100):
+            if g_socket_listener is not None and hasattr(g_socket_listener, 'actual_port') and g_socket_listener.actual_port > 0:
+                break
+            _time.sleep(0.05)
+        if headless:
+            # Redirect subsequent stdout to stderr so only TCP_PORT line goes to parent
+            sys.stdout = sys.stderr
+    elif sock_fd is not None:
         # Lossless mode: use inherited socketpair fd
         print(f"Using inherited socketpair fd {sock_fd}...", file=sys.stderr, flush=True)
         socket_thread = threading.Thread(target=run_socket_thread, args=(bind_addr, int(port)), kwargs={"fd": sock_fd})
