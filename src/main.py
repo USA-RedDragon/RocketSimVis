@@ -27,7 +27,7 @@ from moderngl_window import resources
 from moderngl_window.meta import TextureDescription
 
 from PyQt5 import QtOpenGL, QtWidgets
-from PyQt5.QtCore import QSize, Qt
+from PyQt5.QtCore import QSize, Qt, QTimer
 from PyQt5.QtGui import QScreen, QColor
 
 from OpenGL.GL import *
@@ -914,11 +914,11 @@ def main():
         gl_widget.setFixedSize(VideoRecorder.WIDTH, VideoRecorder.HEIGHT)
         if sys.platform == 'win32':
             # Windows: the offscreen plugin doesn't support OpenGL, so we
-            # create a real window, trigger GL init, then hide it immediately.
+            # must use a real window.  Move it offscreen so it's invisible
+            # but still receives paint events (hiding blocks them entirely).
+            gl_widget.move(-5000, -5000)
             gl_widget.show()
             app.processEvents()  # Ensure initializeGL() fires
-            gl_widget.hide()
-            app.processEvents()
         else:
             # Linux/macOS: offscreen plugin works fine
             gl_widget.show()
